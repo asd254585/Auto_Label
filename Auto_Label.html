@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLO 網頁版自動標記工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', 'Noto Sans TC', sans-serif; }
+        .form-input, .form-textarea, .form-select {
+            --tw-ring-color: #3b82f6; /* blue-500 */
+        }
+        .btn-primary {
+            transition: all 0.3s ease;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+        }
+        .file-drop-zone {
+            transition: all 0.2s ease-in-out;
+        }
+        .file-drop-zone.dragover {
+            border-color: #3b82f6;
+            background-color: #1e3a8a;
+        }
+        #loading-overlay {
+            transition: opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200">
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 bg-gray-900 bg-opacity-80 flex-col items-center justify-center z-50 hidden opacity-0">
+        <svg class="animate-spin h-12 w-12 text-blue-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <p id="loading-text" class="text-xl font-semibold text-white">正在初始化...</p>
+    </div>
+
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl md:text-5xl font-bold text-white mb-2">YOLO 網頁版自動標記工具</h1>
+            <p class="text-lg text-gray-400">從影片批次產生 YOLO 格式的圖片與標籤檔案</p>
+        </header>
+
+        <main class="max-w-4xl mx-auto bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- 左側設定 -->
+                <div class="space-y-6">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">1. 選擇任務類型</label>
+                        <select id="task-type" class="form-select w-full bg-gray-700 border-gray-600 rounded-md shadow-sm focus:ring focus:ring-opacity-50">
+                            <option value="detection">物件偵測 (Object Detection)</option>
+                            <option value="segmentation">影像分割 (Image Segmentation)</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">2. 上傳模型檔案</label>
+                        <input type="file" id="model-file" accept=".pt" class="form-input w-full bg-gray-700 border-gray-600 rounded-md file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700">
+                        <p class="text-xs text-gray-500 mt-1">此為示意，瀏覽器無法直接執行 .pt 模型。</p>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">3. 上傳影片檔案 (可多選)</label>
+                        <div id="file-drop-zone" class="relative block w-full border-2 border-gray-600 border-dashed rounded-lg p-6 text-center hover:border-gray-500 cursor-pointer">
+                            <input type="file" id="video-files" multiple accept="video/*" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                            <div class="text-gray-400">
+                                <svg class="mx-auto h-12 w-12" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4V12a4 4 0 014-4h12l4 4h12a4 4 0 014 4z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                <p class="mt-1 block font-medium">點擊選擇檔案，或拖曳至此</p>
+                                <p class="text-xs">支援 MP4, AVI, MOV, WEBM 等格式</p>
+                            </div>
+                        </div>
+                        <div id="file-list" class="mt-2 text-sm text-gray-400"></div>
+                    </div>
+                </div>
+
+                <!-- 右側設定 -->
+                <div class="space-y-6">
+                    <div>
+                        <label for="num-classes" class="block text-sm font-medium text-gray-300 mb-2">4. 輸入 Class 數量</label>
+                        <input type="number" id="num-classes" min="1" placeholder="例如：3" class="form-input w-full bg-gray-700 border-gray-600 rounded-md shadow-sm focus:ring focus:ring-opacity-50">
+                    </div>
+                    
+                    <div id="class-fields-container" class="space-y-3">
+                        <!-- 動態產生的 Class 欄位會被插入到這裡 -->
+                    </div>
+
+                    <div>
+                        <label for="frame-interval" class="block text-sm font-medium text-gray-300 mb-2">5. 幀數擷取間隔</label>
+                        <input type="number" id="frame-interval" value="30" min="1" class="form-input w-full bg-gray-700 border-gray-600 rounded-md shadow-sm focus:ring focus:ring-opacity-50">
+                        <p class="text-xs text-gray-500 mt-1">每隔 N 幀擷取一張圖片並進行標註。</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 執行按鈕 -->
+            <div class="mt-10 text-center">
+                <button id="start-btn" class="btn-primary w-full md:w-1/2 bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-blue-500 disabled:bg-gray-500 disabled:cursor-not-allowed">
+                    開始處理
+                </button>
+            </div>
+
+            <!-- 進度與結果 -->
+            <div id="progress-container" class="mt-8 hidden">
+                <h3 class="text-lg font-semibold text-white mb-2">處理進度</h3>
+                <div class="bg-gray-700 rounded-lg p-4">
+                    <p id="progress-text" class="text-gray-300"></p>
+                    <div class="w-full bg-gray-600 rounded-full h-2.5 mt-2">
+                        <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="results-container" class="mt-8 hidden">
+                 <h3 class="text-lg font-semibold text-white mb-2">處理完成</h3>
+                <div class="bg-green-900 bg-opacity-50 border border-green-700 text-green-300 px-4 py-3 rounded-lg" role="alert">
+                    <p>所有影片已處理完畢！點擊下方按鈕下載包含圖片與標籤的 .zip 檔案。</p>
+                    <a id="download-link" class="mt-4 inline-block bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700">下載結果.zip</a>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const taskTypeEl = document.getElementById('task-type');
+            const modelFileEl = document.getElementById('model-file');
+            const videoFilesEl = document.getElementById('video-files');
+            const numClassesEl = document.getElementById('num-classes');
+            const classFieldsContainer = document.getElementById('class-fields-container');
+            const frameIntervalEl = document.getElementById('frame-interval');
+            const startBtn = document.getElementById('start-btn');
+            
+            const fileDropZone = document.getElementById('file-drop-zone');
+            const fileListEl = document.getElementById('file-list');
+            
+            const progressContainer = document.getElementById('progress-container');
+            const progressText = document.getElementById('progress-text');
+            const progressBar = document.getElementById('progress-bar');
+            
+            const resultsContainer = document.getElementById('results-container');
+            const downloadLink = document.getElementById('download-link');
+
+            const loadingOverlay = document.getElementById('loading-overlay');
+            const loadingText = document.getElementById('loading-text');
+
+            // --- Drag and Drop ---
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                fileDropZone.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                fileDropZone.addEventListener(eventName, () => fileDropZone.classList.add('dragover'), false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                fileDropZone.addEventListener(eventName, () => fileDropZone.classList.remove('dragover'), false);
+            });
+
+            fileDropZone.addEventListener('drop', handleDrop, false);
+            videoFilesEl.addEventListener('change', handleFileSelect);
+
+            function handleDrop(e) {
+                videoFilesEl.files = e.dataTransfer.files;
+                updateFileList();
+            }
+            
+            function handleFileSelect() {
+                updateFileList();
+            }
+
+            function updateFileList() {
+                const files = videoFilesEl.files;
+                if (files.length === 0) {
+                    fileListEl.innerHTML = '';
+                    return;
+                }
+                let fileNames = Array.from(files).map(f => f.name).join(', ');
+                if (fileNames.length > 100) {
+                    fileNames = `${files.length} 個檔案已選取`;
+                }
+                fileListEl.innerHTML = `<span class="font-medium text-gray-300">已選取：</span>${fileNames}`;
+            }
+
+            // --- 動態產生 Class 欄位 ---
+            numClassesEl.addEventListener('input', () => {
+                const count = parseInt(numClassesEl.value, 10);
+                classFieldsContainer.innerHTML = ''; // 清除舊欄位
+
+                if (isNaN(count) || count < 1) {
+                    return;
+                }
+                
+                const header = document.createElement('p');
+                header.className = 'text-sm font-medium text-gray-300 mb-2';
+                header.textContent = '請依序輸入類別名稱';
+                classFieldsContainer.appendChild(header);
+
+                for (let i = 0; i < count; i++) {
+                    const fieldWrapper = document.createElement('div');
+                    fieldWrapper.className = 'grid grid-cols-3 gap-3 items-center';
+                    
+                    fieldWrapper.innerHTML = `
+                        <input type="text" placeholder="類別名稱" class="class-name-input col-span-2 form-input w-full bg-gray-700 border-gray-600 rounded-md shadow-sm text-sm py-2">
+                        <input type="number" value="${i}" readonly class="class-id-input col-span-1 form-input w-full bg-gray-600 border-gray-500 rounded-md shadow-sm text-sm py-2 text-center text-gray-400">
+                    `;
+                    classFieldsContainer.appendChild(fieldWrapper);
+                }
+            });
+
+
+            // --- Core Logic ---
+            startBtn.addEventListener('click', async () => {
+                if (!validateInputs()) return;
+
+                startBtn.disabled = true;
+                showLoading('開始處理...');
+                progressContainer.classList.remove('hidden');
+                resultsContainer.classList.add('hidden');
+
+                const frameInterval = parseInt(frameIntervalEl.value, 10);
+                const zip = new JSZip();
+                const videos = Array.from(videoFilesEl.files);
+                let totalFramesToProcess = 0;
+
+                // 預先計算總幀數以提供更準確的進度條
+                for (const video of videos) {
+                    try {
+                        const duration = await getVideoDuration(video);
+                        const fps = 30; // 假設為 30 fps
+                        totalFramesToProcess += Math.floor((duration * fps) / frameInterval);
+                    } catch (e) {
+                        console.warn(`無法讀取影片 ${video.name} 的元數據，進度條可能不準確。`);
+                    }
+                }
+
+                let processedFrames = 0;
+
+                for (let i = 0; i < videos.length; i++) {
+                    const videoFile = videos[i];
+                    const videoName = videoFile.name.split('.').slice(0, -1).join('.');
+                    const videoFolder = zip.folder(videoName);
+                    const imagesFolder = videoFolder.folder('images');
+                    const labelsFolder = videoFolder.folder('labels');
+                    
+                    try {
+                        await processVideo(videoFile, frameInterval, (frameNumber, frameData) => {
+                            const baseFilename = `${videoName}_frame_${String(frameNumber).padStart(6, '0')}`;
+                            
+                            imagesFolder.file(`${baseFilename}.jpg`, frameData, { binary: true });
+                            
+                            const labelContent = ""; 
+                            labelsFolder.file(`${baseFilename}.txt`, labelContent);
+                            
+                            processedFrames++;
+                            const overallProgress = totalFramesToProcess > 0 ? (processedFrames / totalFramesToProcess) * 100 : (i / videos.length) * 100;
+                            updateProgress(
+                                `處理中 (${i + 1}/${videos.length}): ${videoFile.name} - 已擷取 ${processedFrames} 幀`,
+                                overallProgress
+                            );
+                        });
+                    } catch (error) {
+                        console.error(`處理影片 ${videoFile.name} 時發生錯誤:`, error);
+                        alert(`處理影片 ${videoFile.name} 失敗，請檢查瀏覽器主控台以獲取詳細資訊。`);
+                    }
+                }
+
+                showLoading('正在產生 ZIP 檔案...');
+                updateProgress('正在壓縮檔案，請稍候...', 100);
+                
+                zip.generateAsync({ type: 'blob' })
+                    .then(content => {
+                        const url = URL.createObjectURL(content);
+                        downloadLink.href = url;
+                        downloadLink.download = `yolo_annotated_output_${Date.now()}.zip`;
+                        resultsContainer.classList.remove('hidden');
+                        hideLoading();
+                        startBtn.disabled = false;
+                    });
+            });
+
+            function validateInputs() {
+                if (modelFileEl.files.length === 0) {
+                    alert('請上傳一個模型檔案。');
+                    return false;
+                }
+                if (videoFilesEl.files.length === 0) {
+                    alert('請至少上傳一個影片檔案。');
+                    return false;
+                }
+                const numClasses = parseInt(numClassesEl.value, 10);
+                if (isNaN(numClasses) || numClasses < 1) {
+                    alert('請輸入有效的 Class 數量。');
+                    return false;
+                }
+                const classNameInputs = document.querySelectorAll('.class-name-input');
+                if (classNameInputs.length !== numClasses) {
+                    alert('Class 欄位數量與您輸入的數量不符，請重新輸入數量以更新欄位。');
+                    return false;
+                }
+                for (let i = 0; i < classNameInputs.length; i++) {
+                    if (classNameInputs[i].value.trim() === '') {
+                        alert(`請輸入第 ${i + 1} 個類別的名稱。`);
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            function processVideo(file, interval, onFrame) {
+                return new Promise((resolve, reject) => {
+                    const video = document.createElement('video');
+                    video.preload = 'metadata';
+                    video.muted = true;
+                    video.playsInline = true;
+
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    const videoUrl = URL.createObjectURL(file);
+                    video.src = videoUrl;
+                    
+                    let frameCounter = 0;
+                    
+                    video.onloadedmetadata = () => {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        video.currentTime = 0;
+                    };
+
+                    video.onseeked = async () => {
+                        if (frameCounter % interval === 0) {
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                            canvas.toBlob(blob => {
+                                onFrame(frameCounter, blob);
+                            }, 'image/jpeg', 0.9);
+                        }
+                        
+                        frameCounter++;
+                        const nextTime = frameCounter / 30; // 假設 30fps
+
+                        if (nextTime < video.duration) {
+                            video.currentTime = nextTime;
+                        } else {
+                            URL.revokeObjectURL(videoUrl);
+                            resolve();
+                        }
+                    };
+
+                    video.onerror = (e) => {
+                        URL.revokeObjectURL(videoUrl);
+                        reject(new Error("影片讀取錯誤"));
+                    };
+                });
+            }
+
+            function getVideoDuration(file) {
+                return new Promise((resolve, reject) => {
+                    const video = document.createElement('video');
+                    video.preload = 'metadata';
+                    video.onloadedmetadata = () => {
+                        window.URL.revokeObjectURL(video.src);
+                        resolve(video.duration);
+                    };
+                    video.onerror = reject;
+                    video.src = window.URL.createObjectURL(file);
+                });
+            }
+
+            function showLoading(text) {
+                loadingText.textContent = text;
+                loadingOverlay.classList.remove('hidden');
+                setTimeout(() => loadingOverlay.classList.remove('opacity-0'), 10);
+            }
+
+            function hideLoading() {
+                loadingOverlay.classList.add('opacity-0');
+                setTimeout(() => loadingOverlay.classList.add('hidden'), 300);
+            }
+
+            function updateProgress(text, percentage) {
+                progressText.textContent = text;
+                progressBar.style.width = `${percentage}%`;
+            }
+        });
+    </script>
+</body>
+</html>
+
